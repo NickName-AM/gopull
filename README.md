@@ -12,7 +12,13 @@ the summary instead of merging or hanging.
 ## Install
 
 ```sh
-go install gopull@latest   # or: go build -o gopull .
+go install github.com/NickName-AM/gopull@latest
+```
+
+Or from a local checkout:
+
+```sh
+go build -o gopull .
 ```
 
 Requires the `git` binary on PATH - pulls use your normal git config, SSH

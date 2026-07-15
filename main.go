@@ -11,8 +11,8 @@ import (
 	"runtime"
 	"strings"
 
-	"gopull/internal/discover"
-	"gopull/internal/puller"
+	"github.com/NickName-AM/gopull/internal/discover"
+	"github.com/NickName-AM/gopull/internal/puller"
 )
 
 func main() {
