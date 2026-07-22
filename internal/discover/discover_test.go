@@ -2,6 +2,7 @@ package discover
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -95,6 +96,17 @@ func TestFindMaxDepth(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("Find(depth=3) = %v, want %v", got, want)
+	}
+}
+
+func TestFindCanceled(t *testing.T) {
+	root := t.TempDir()
+	mkRepo(t, filepath.Join(root, "a"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := Find(ctx, root, 0); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
 	}
 }
 
