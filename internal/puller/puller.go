@@ -3,6 +3,7 @@ package puller
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -180,9 +181,10 @@ func pullOne(ctx context.Context, repo string, opts Options) Result {
 
 	r := Result{Repo: repo, Output: output, Duration: time.Since(start)}
 	switch {
-	case err != nil && ctx.Err() != nil:
+	case err != nil && (ctx.Err() != nil || killedBySignal(err)):
 		// Interrupted mid-pull; the git output is noise about the kill.
 		r.Status = Canceled
+		r.Output = ""
 	case err != nil:
 		r.Status = Failed
 		r.Err = err
@@ -192,6 +194,18 @@ func pullOne(ctx context.Context, repo string, opts Options) Result {
 		r.Status = Updated
 	}
 	return r
+}
+
+// killedBySignal reports whether git died from a signal rather than exiting
+// on its own. A terminal Ctrl-C reaches git directly, and it can die that way
+// a moment before this process gets around to canceling the context - without
+// this check such a pull would be reported as a failure.
+func killedBySignal(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	return exitErr.ExitCode() == -1
 }
 
 // currentBranch returns the checked-out branch name, or detached=true for

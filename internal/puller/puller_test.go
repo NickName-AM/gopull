@@ -157,6 +157,20 @@ func TestPullOneCanceled(t *testing.T) {
 	}
 }
 
+func TestKilledBySignal(t *testing.T) {
+	// A terminal Ctrl-C reaches git directly, so a pull can die by signal
+	// before the context is canceled; that must not read as a failure.
+	if err := exec.Command("sh", "-c", "kill -TERM $$").Run(); !killedBySignal(err) {
+		t.Errorf("killedBySignal(%v) = false, want true for a signaled process", err)
+	}
+	if err := exec.Command("sh", "-c", "exit 1").Run(); killedBySignal(err) {
+		t.Errorf("killedBySignal(%v) = true, want false for a normal exit", err)
+	}
+	if killedBySignal(nil) {
+		t.Error("killedBySignal(nil) = true, want false")
+	}
+}
+
 // run calls f in a goroutine and fails the test if it does not return in
 // time, so a deadlock in the worker pool is a failure rather than a hang.
 func run(t *testing.T, f func() []Result) []Result {
