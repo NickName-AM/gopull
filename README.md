@@ -57,8 +57,19 @@ gopull -p -j 8 ~/Development/projects  # parallel with 8 workers
 gopull --list ~/Development/projects   # just show what would be pulled
 ```
 
+## Interrupting
+
+Press Ctrl-C to stop a run. No further repositories are dispatched, the pulls
+already running are stopped, and you still get the summary for everything that
+completed - repos whose pull was cut short are reported as `canceled`, and the
+ones never started are counted as `not pulled`. A second Ctrl-C quits on the
+spot, in case a pull refuses to wind down.
+
+An interrupted pull is safe: git is asked to terminate rather than killed
+outright, so it removes its own lock files on the way out.
+
 Exit code is 0 when every repo pulled cleanly (or was already up to date),
-1 if any repo failed.
+1 if any repo failed, and 130 if the run was interrupted.
 
 ## Output
 
@@ -72,4 +83,18 @@ Pulling 3 repositories with 3 workers...
 
 ✗ work/deep/diverged:
     fatal: Not possible to fast-forward, aborting.
+```
+
+Interrupted with Ctrl-C partway through:
+
+```
+Pulling 8 repositories with 3 workers...
+· fast1 (up to date)
+· fast2 (up to date)
+
+interrupt: stopping (Ctrl-C again to force quit)
+· slow1 (canceled)
+
+0 updated, 2 up to date, 0 skipped, 0 failed, 1 canceled, 5 not pulled
+interrupted
 ```

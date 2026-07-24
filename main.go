@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 
 	"github.com/NickName-AM/gopull/internal/discover"
 	"github.com/NickName-AM/gopull/internal/puller"
@@ -67,12 +68,34 @@ func main() {
 	}
 	opts := puller.Options{Remote: remote, Branch: branch, ForceBranch: force}
 
-	os.Exit(run(root, parallel, jobs, list, depth, opts))
+	os.Exit(run(interruptible(), root, parallel, jobs, list, depth, opts))
 }
 
-func run(root string, parallel bool, jobs int, list bool, depth int, opts puller.Options) int {
-	repos, err := discover.Find(root, depth)
+// interruptible returns a context canceled by the first interrupt signal.
+// A second signal quits on the spot, so a run that refuses to wind down can
+// still be escaped. Note signal.NotifyContext cannot do this: it stops
+// listening after the first signal and silently drops the rest.
+func interruptible() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	sig := make(chan os.Signal, 2)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sig
+		fmt.Fprintln(os.Stderr, "\ninterrupt: stopping (Ctrl-C again to force quit)")
+		cancel()
+		<-sig
+		os.Exit(130)
+	}()
+	return ctx
+}
+
+func run(ctx context.Context, root string, parallel bool, jobs int, list bool, depth int, opts puller.Options) int {
+	repos, err := discover.Find(ctx, root, depth)
 	if err != nil {
+		if ctx.Err() != nil {
+			fmt.Fprintln(os.Stderr, "gopull: interrupted")
+			return 130
+		}
 		fmt.Fprintf(os.Stderr, "gopull: %v\n", err)
 		return 1
 	}
@@ -88,9 +111,6 @@ func run(root string, parallel bool, jobs int, list bool, depth int, opts puller
 		return 0
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-
 	report := func(r puller.Result) {
 		name := display(root, r.Repo)
 		switch r.Status {
@@ -100,6 +120,8 @@ func run(root string, parallel bool, jobs int, list bool, depth int, opts puller
 			fmt.Printf("· %s (up to date)\n", name)
 		case puller.Skipped:
 			fmt.Printf("- %s (skipped: %s)\n", name, r.Output)
+		case puller.Canceled:
+			fmt.Printf("· %s (canceled)\n", name)
 		case puller.Failed:
 			fmt.Printf("✗ %s (failed)\n", name)
 		}
@@ -118,11 +140,14 @@ func run(root string, parallel bool, jobs int, list bool, depth int, opts puller
 		results = puller.RunSequential(ctx, repos, opts, report)
 	}
 
-	return summarize(root, results)
+	return summarize(root, repos, results, ctx.Err() != nil)
 }
 
-func summarize(root string, results []puller.Result) int {
-	var updated, upToDate, skipped int
+// summarize prints the tallies and the output of every failed pull. An
+// interrupted run reports what it did not get to, and exits 130 whatever the
+// results were.
+func summarize(root string, repos []string, results []puller.Result, interrupted bool) int {
+	var updated, upToDate, skipped, canceled int
 	var failed []puller.Result
 	for _, r := range results {
 		switch r.Status {
@@ -132,13 +157,30 @@ func summarize(root string, results []puller.Result) int {
 			upToDate++
 		case puller.Skipped:
 			skipped++
+		case puller.Canceled:
+			canceled++
 		case puller.Failed:
 			failed = append(failed, r)
 		}
 	}
 
-	fmt.Printf("\n%d updated, %d up to date, %d skipped, %d failed\n", updated, upToDate, skipped, len(failed))
+	fmt.Printf("\n%d updated, %d up to date, %d skipped, %d failed", updated, upToDate, skipped, len(failed))
+	if canceled > 0 {
+		fmt.Printf(", %d canceled", canceled)
+	}
+	// Interrupted runs stop dispatching, so some repos have no result at all.
+	if notPulled := len(repos) - len(results); notPulled > 0 {
+		fmt.Printf(", %d not pulled", notPulled)
+	}
+	fmt.Println()
+	if interrupted {
+		fmt.Println("interrupted")
+	}
+
 	if len(failed) == 0 {
+		if interrupted {
+			return 130
+		}
 		return 0
 	}
 	for _, r := range failed {
@@ -146,6 +188,9 @@ func summarize(root string, results []puller.Result) int {
 		for _, line := range strings.Split(r.Output, "\n") {
 			fmt.Printf("    %s\n", line)
 		}
+	}
+	if interrupted {
+		return 130
 	}
 	return 1
 }

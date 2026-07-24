@@ -1,6 +1,8 @@
 package discover
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -41,7 +43,7 @@ func TestFind(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := Find(root, 0)
+	got, err := Find(context.Background(), root, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +62,7 @@ func TestFindRootIsRepo(t *testing.T) {
 	mkRepo(t, root)
 	mkRepo(t, filepath.Join(root, "inner"))
 
-	got, err := Find(root, 0)
+	got, err := Find(context.Background(), root, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +77,7 @@ func TestFindMaxDepth(t *testing.T) {
 	mkRepo(t, filepath.Join(root, "shallow"))
 	mkRepo(t, filepath.Join(root, "one", "two", "deep"))
 
-	got, err := Find(root, 2)
+	got, err := Find(context.Background(), root, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +86,7 @@ func TestFindMaxDepth(t *testing.T) {
 		t.Errorf("Find(depth=2) = %v, want %v", got, want)
 	}
 
-	got, err = Find(root, 3)
+	got, err = Find(context.Background(), root, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,16 +99,27 @@ func TestFindMaxDepth(t *testing.T) {
 	}
 }
 
+func TestFindCanceled(t *testing.T) {
+	root := t.TempDir()
+	mkRepo(t, filepath.Join(root, "a"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := Find(ctx, root, 0); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+}
+
 func TestFindNotADirectory(t *testing.T) {
 	root := t.TempDir()
 	file := filepath.Join(root, "file")
 	if err := os.WriteFile(file, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Find(file, 0); err == nil {
+	if _, err := Find(context.Background(), file, 0); err == nil {
 		t.Error("Find on a file should fail")
 	}
-	if _, err := Find(filepath.Join(root, "missing"), 0); err == nil {
+	if _, err := Find(context.Background(), filepath.Join(root, "missing"), 0); err == nil {
 		t.Error("Find on a missing path should fail")
 	}
 }

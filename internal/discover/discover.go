@@ -2,6 +2,7 @@
 package discover
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -20,7 +21,8 @@ var skipDirs = map[string]bool{
 // in lexical order. It does not descend into a repository once found,
 // so repos nested inside other repos are not returned. If maxDepth > 0,
 // directories more than maxDepth levels below root are not visited.
-func Find(root string, maxDepth int) ([]string, error) {
+// Canceling ctx aborts the walk and returns ctx's error.
+func Find(ctx context.Context, root string, maxDepth int) ([]string, error) {
 	root = filepath.Clean(root)
 	info, err := os.Stat(root)
 	if err != nil {
@@ -35,6 +37,9 @@ func Find(root string, maxDepth int) ([]string, error) {
 
 	var repos []string
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err != nil {
 			if errors.Is(err, fs.ErrPermission) {
 				fmt.Fprintf(os.Stderr, "warning: skipping %s: %v\n", path, err)

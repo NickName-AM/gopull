@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func git(t *testing.T, dir string, args ...string) string {
@@ -143,6 +144,111 @@ func TestPullOneNotARepo(t *testing.T) {
 	r := pullOne(context.Background(), t.TempDir(), Options{})
 	if r.Status != Failed {
 		t.Errorf("status = %v, want failed", r.Status)
+	}
+}
+
+func TestPullOneCanceled(t *testing.T) {
+	_, clone := setup(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := pullOne(ctx, clone, Options{})
+	if r.Status != Canceled {
+		t.Errorf("status = %v, want canceled; output: %s (err: %v)", r.Status, r.Output, r.Err)
+	}
+}
+
+func TestKilledBySignal(t *testing.T) {
+	// A terminal Ctrl-C reaches git directly, so a pull can die by signal
+	// before the context is canceled; that must not read as a failure.
+	if err := exec.Command("sh", "-c", "kill -TERM $$").Run(); !killedBySignal(err) {
+		t.Errorf("killedBySignal(%v) = false, want true for a signaled process", err)
+	}
+	if err := exec.Command("sh", "-c", "exit 1").Run(); killedBySignal(err) {
+		t.Errorf("killedBySignal(%v) = true, want false for a normal exit", err)
+	}
+	if killedBySignal(nil) {
+		t.Error("killedBySignal(nil) = true, want false")
+	}
+}
+
+// run calls f in a goroutine and fails the test if it does not return in
+// time, so a deadlock in the worker pool is a failure rather than a hang.
+func run(t *testing.T, f func() []Result) []Result {
+	t.Helper()
+	done := make(chan []Result, 1)
+	go func() { done <- f() }()
+	select {
+	case results := <-done:
+		return results
+	case <-time.After(30 * time.Second):
+		t.Fatal("run did not return; workers are likely deadlocked")
+		return nil
+	}
+}
+
+func TestRunCanceledBeforeStart(t *testing.T) {
+	var repos []string
+	for range 4 {
+		_, clone := setup(t)
+		repos = append(repos, clone)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for _, tc := range []struct {
+		name string
+		run  func(func(Result)) []Result
+	}{
+		{"sequential", func(report func(Result)) []Result {
+			return RunSequential(ctx, repos, Options{}, report)
+		}},
+		{"parallel", func(report func(Result)) []Result {
+			return RunParallel(ctx, repos, Options{}, 3, report)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var reported int
+			results := run(t, func() []Result { return tc.run(func(Result) { reported++ }) })
+			if len(results) != 0 {
+				t.Errorf("got %d results, want none for a canceled run", len(results))
+			}
+			if reported != 0 {
+				t.Errorf("report called %d times, want 0", reported)
+			}
+		})
+	}
+}
+
+func TestRunCanceledMidway(t *testing.T) {
+	var repos []string
+	for range 6 {
+		_, clone := setup(t)
+		repos = append(repos, clone)
+	}
+
+	for _, tc := range []struct {
+		name string
+		run  func(context.Context, func(Result)) []Result
+	}{
+		{"sequential", func(ctx context.Context, report func(Result)) []Result {
+			return RunSequential(ctx, repos, Options{}, report)
+		}},
+		{"parallel", func(ctx context.Context, report func(Result)) []Result {
+			// One worker keeps the stopping point predictable.
+			return RunParallel(ctx, repos, Options{}, 1, report)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			// Cancel as soon as the first repo is done, as a Ctrl-C would.
+			results := run(t, func() []Result {
+				return tc.run(ctx, func(Result) { cancel() })
+			})
+			if len(results) == 0 || len(results) >= len(repos) {
+				t.Errorf("got %d results, want between 1 and %d", len(results), len(repos)-1)
+			}
+		})
 	}
 }
 
