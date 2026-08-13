@@ -9,6 +9,8 @@ are ignored. Pulls run `git pull --ff-only` with terminal prompts disabled, so
 a repo with diverged branches or broken credentials shows up as a failure in
 the summary instead of merging or hanging.
 
+| ## The Dockerfile is not useful. I am just practicing docker. Ignore this branch
+
 ## Install
 
 ```sh
