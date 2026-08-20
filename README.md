@@ -66,10 +66,15 @@ ones never started are counted as `not pulled`. A second Ctrl-C quits on the
 spot, in case a pull refuses to wind down.
 
 An interrupted pull is safe: git is asked to terminate rather than killed
-outright, so it removes its own lock files on the way out.
+outright, so it removes its own lock files on the way out. Each pull runs in
+its own process group and the whole group is signaled, so the `fetch` and
+`merge` that `git pull` spawns - the ones actually holding `index.lock` - are
+stopped too, rather than being left behind to finish on their own. A pull that
+ignores the interrupt and completes anyway is still reported as `updated`.
 
 Exit code is 0 when every repo pulled cleanly (or was already up to date),
-1 if any repo failed, and 130 if the run was interrupted.
+1 if any repo failed or was cut short without an interrupt, and 130 if the run
+was interrupted.
 
 ## Output
 
