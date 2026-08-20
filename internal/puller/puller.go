@@ -172,40 +172,79 @@ func pullOne(ctx context.Context, repo string, opts Options) Result {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	// Fail fast on missing credentials instead of hanging on a prompt.
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	// "git pull" is a wrapper: the fetch and merge that actually hold
+	// index.lock are grandchildren, and signaling the wrapper alone would
+	// leave them running with the lock held. Put the pull in its own
+	// process group so the whole tree can be terminated together.
+	setProcessGroup(cmd)
 	// SIGTERM rather than the default SIGKILL: git removes its lock files
 	// on the way out. WaitDelay kills it if it does not take the hint.
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.Cancel = func() error {
+		if err := terminateGroup(cmd.Process); err != nil {
+			return err
+		}
+		// Signal delivered - now let git's own exit status decide the
+		// outcome. Returning nil here would make Wait report ctx.Err()
+		// even for a pull that finished cleanly in the shutdown window.
+		return os.ErrProcessDone
+	}
 	cmd.WaitDelay = 2 * time.Second
 	outBytes, err := cmd.CombinedOutput()
 	output := strings.TrimSpace(string(outBytes))
 
 	r := Result{Repo: repo, Output: output, Duration: time.Since(start)}
 	switch {
-	case err != nil && (ctx.Err() != nil || killedBySignal(err)):
+	case err != nil && (ctx.Err() != nil || killedByInterrupt(err)):
 		// Interrupted mid-pull; the git output is noise about the kill.
 		r.Status = Canceled
 		r.Output = ""
+	case errors.Is(err, exec.ErrWaitDelay):
+		// git exited successfully but something it spawned - typically a
+		// backgrounded ssh ControlPersist master - still held the pipes
+		// when WaitDelay expired. The pull itself worked, so classify it
+		// on the output that did arrive rather than calling it a failure.
+		r.Status = classify(output)
 	case err != nil:
 		r.Status = Failed
 		r.Err = err
-	case strings.Contains(output, "Already up to date"):
-		r.Status = UpToDate
 	default:
-		r.Status = Updated
+		r.Status = classify(output)
 	}
 	return r
 }
 
-// killedBySignal reports whether git died from a signal rather than exiting
-// on its own. A terminal Ctrl-C reaches git directly, and it can die that way
-// a moment before this process gets around to canceling the context - without
+// classify maps the output of a git pull that exited successfully onto the
+// status to report for it.
+func classify(output string) Status {
+	if strings.Contains(output, "Already up to date") {
+		return UpToDate
+	}
+	return Updated
+}
+
+// killedByInterrupt reports whether git died from SIGINT or SIGTERM rather
+// than exiting on its own. Where the pull is not isolated in its own process
+// group a terminal Ctrl-C reaches git directly, and it can die that way a
+// moment before this process gets around to canceling the context - without
 // this check such a pull would be reported as a failure.
-func killedBySignal(err error) bool {
+//
+// Only those two signals count. A git killed by the OOM killer or by an
+// external kill -9 really did fail, and reporting it as merely canceled would
+// hide both its output and the nonzero exit code from the caller.
+func killedByInterrupt(err error) bool {
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
 		return false
 	}
-	return exitErr.ExitCode() == -1
+	status, ok := exitErr.Sys().(syscall.WaitStatus)
+	if !ok || !status.Signaled() {
+		return false
+	}
+	switch status.Signal() {
+	case syscall.SIGINT, syscall.SIGTERM:
+		return true
+	}
+	return false
 }
 
 // currentBranch returns the checked-out branch name, or detached=true for

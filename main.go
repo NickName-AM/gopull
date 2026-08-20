@@ -143,9 +143,9 @@ func run(ctx context.Context, root string, parallel bool, jobs int, list bool, d
 	return summarize(root, repos, results, ctx.Err() != nil)
 }
 
-// summarize prints the tallies and the output of every failed pull. An
-// interrupted run reports what it did not get to, and exits 130 whatever the
-// results were.
+// summarize prints the tallies and the output of every failed pull, and
+// returns the exit code for the run. An interrupted run reports what it did
+// not get to, and exits 130 whatever the results were.
 func summarize(root string, repos []string, results []puller.Result, interrupted bool) int {
 	var updated, upToDate, skipped, canceled int
 	var failed []puller.Result
@@ -180,6 +180,12 @@ func summarize(root string, repos []string, results []puller.Result, interrupted
 	if len(failed) == 0 {
 		if interrupted {
 			return 130
+		}
+		// Canceled without gopull itself being interrupted means something
+		// killed git behind our back. Those repos were not pulled, so the
+		// run did not succeed, however quiet it looks.
+		if canceled > 0 {
+			return 1
 		}
 		return 0
 	}
